@@ -34,6 +34,7 @@ class Relay(
     fun start() {
         running = true
         LogManager.add("Relay iniciado en ${cfg.listen} (dev=$deviceId)")
+        scope.launch { registerChannel() }
         scope.launch { pollLoop() }
         scope.launch { acceptLoop() }
     }
@@ -44,6 +45,16 @@ class Relay(
         server = null
         scope.cancel()
         LogManager.add("Relay detenido")
+    }
+
+    private suspend fun registerChannel() {
+        try {
+            val json = """{"canales":["${cfg.chan}"]}"""
+            transport.put("registro/activos.json", json.toByteArray())
+            LogManager.add("Canal ${cfg.chan} registrado en registro/activos.json")
+        } catch (e: Exception) {
+            LogManager.add("Fallo registrando canal: ${e.message}")
+        }
     }
 
     private suspend fun acceptLoop() {
@@ -112,7 +123,13 @@ class Relay(
         }
     }
 
-    private fun upKey(id: String, seq: Long) = "${cfg.chan}/c/${Proto.connKey("c", id, seq)}"
+    // Keys compatibles con server.js:
+    // - app escribe en "<chan>/c/<connId>/<seq>"
+    // - server lee de "<chan>/c/" y usa k.split("/")[2] como connId
+    // - server escribe en "<chan>/s/<connId>/<seq>"
+    // - app lista "<chan>/s/" y extrae connId con Proto.connIdOf(k)
+    private fun upKey(id: String, seq: Long) =
+        "${cfg.chan}/c/$id/${seq.toString().padStart(12, '0')}"
     private fun downPrefix() = "${cfg.chan}/s/"
 
     private suspend fun send(conn: Conn, type: Int, body: ByteArray) {

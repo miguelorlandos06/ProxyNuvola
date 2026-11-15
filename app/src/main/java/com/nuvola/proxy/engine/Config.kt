@@ -2,7 +2,7 @@ package com.nuvola.proxy.engine
 
 data class Config(
     val s3Base: String = "https://s3.todus.cu",
-    val bucket: String = "stickers",
+    val bucket: String = "stream",
     val chan: String = "eded311cd9ad19d0",
     val psk: String = "YyHO6lYLUpfUDaTClxYe2cTmEKv1Cd3vX-B1oFFf8wU",
     val listen: String = "127.0.0.1:1080",
