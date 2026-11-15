@@ -12,6 +12,9 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
+        ndk {
+            abiFilters.add("armeabi-v7a")
+        }
     }
     signingConfigs {
         getByName("debug") {
