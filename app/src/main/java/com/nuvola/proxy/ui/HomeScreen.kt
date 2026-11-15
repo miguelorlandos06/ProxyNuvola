@@ -13,7 +13,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -21,9 +20,9 @@ import androidx.compose.ui.unit.sp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
-    state: TunnelUiState, 
-    onConnect: () -> Unit, 
-    onDisconnect: () -> Unit, 
+    state: TunnelUiState,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLogs: () -> Unit
 ) {
@@ -31,6 +30,7 @@ fun HomeScreen(
     val orbColor = when (state.status) {
         is TunnelStatus.Connected -> Color(0xFF4CAF50)
         is TunnelStatus.Connecting -> Color(0xFFFF9800)
+        is TunnelStatus.Error -> Color(0xFFF44336)
         else -> Color(0xFF9E9E9E)
     }
 
@@ -42,17 +42,27 @@ fun HomeScreen(
                 IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Ajustes") }
             }
             Spacer(Modifier.weight(1f))
-            Box(Modifier.size(250.dp).background(Brush.radialGradient(colors = listOf(orbColor.copy(alpha = 0.8f), orbColor.copy(alpha = 0.1f)), center = Offset.Unspecified), shape = CircleShape))
+            Box(Modifier.size(250.dp).background(Brush.radialGradient(colors = listOf(orbColor.copy(alpha = 0.8f), orbColor.copy(alpha = 0.1f))), shape = CircleShape))
             Spacer(Modifier.height(32.dp))
             val title = when (state.status) {
                 is TunnelStatus.Connected -> "Proxy Listo"
                 is TunnelStatus.Connecting -> "Iniciando..."
+                is TunnelStatus.Error -> "Error"
                 else -> "Inicia tu conexión"
             }
-            Text(title, fontSize = 36.sp, fontWeight = FontWeight.ExtraBold, color = Color.Black)
-            Text(if (isConnected) "127.0.0.1:1080 | ↑ ${state.upBytes} B ↓ ${state.downBytes} B" else "Toca el botón para empezar", fontSize = 14.sp, color = Color.Gray)
+            Text(title, fontSize = 36.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onBackground)
+            val subtitle = when {
+                isConnected -> "127.0.0.1:1080 | ↑ ${state.upBytes} B ↓ ${state.downBytes} B · conns ${state.conns}"
+                state.status is TunnelStatus.Error -> (state.status as TunnelStatus.Error).msg
+                else -> "Toca el botón para empezar"
+            }
+            Text(subtitle, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.weight(1f))
-            Button(onClick = { if (isConnected) onDisconnect() else onConnect() }, modifier = Modifier.fillMaxWidth().height(64.dp), shape = RoundedCornerShape(32.dp)) {
+            Button(
+                onClick = { if (isConnected) onDisconnect() else onConnect() },
+                modifier = Modifier.fillMaxWidth().height(64.dp),
+                shape = RoundedCornerShape(32.dp)
+            ) {
                 Text(if (isConnected) "DETENER" else "INICIAR", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
         }

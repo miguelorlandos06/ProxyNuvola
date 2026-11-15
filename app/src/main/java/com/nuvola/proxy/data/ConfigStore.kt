@@ -1,4 +1,5 @@
 package com.nuvola.proxy.data
+
 import android.content.Context
 import android.content.SharedPreferences
 import com.nuvola.proxy.engine.Config

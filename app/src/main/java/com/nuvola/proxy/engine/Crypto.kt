@@ -33,7 +33,6 @@ class Crypto(psk: String, chan: String) {
     }
 
     private val key: ByteArray
-    private val aes: Cipher = Cipher.getInstance("AES/GCM/NoPadding")
     private val random = SecureRandom()
 
     init {
@@ -46,6 +45,7 @@ class Crypto(psk: String, chan: String) {
         val rnd = ByteArray(4); random.nextBytes(rnd)
         System.arraycopy(rnd, 0, nonce, 0, 4)
         ByteBuffer.wrap(nonce, 4, 8).putLong(seq)
+        val aes = Cipher.getInstance("AES/GCM/NoPadding")
         aes.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_LEN * 8, nonce))
         aes.updateAAD(path.toByteArray())
         val pt = ByteArray(1 + body.size)
@@ -60,9 +60,10 @@ class Crypto(psk: String, chan: String) {
     }
 
     fun unseal(blob: ByteArray, path: String): Pair<Int, ByteArray> {
-        if (blob.size < MIN_BLOB || !blob.copyOfRange(0,3).contentEquals(MAGIC)) throw Exception("blob invalido")
+        if (blob.size < MIN_BLOB || !blob.copyOfRange(0, 3).contentEquals(MAGIC)) throw Exception("blob invalido")
         val nonce = blob.copyOfRange(3, HDR_LEN)
         val ct = blob.copyOfRange(HDR_LEN, blob.size)
+        val aes = Cipher.getInstance("AES/GCM/NoPadding")
         aes.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_LEN * 8, nonce))
         aes.updateAAD(path.toByteArray())
         val pt = aes.doFinal(ct)
