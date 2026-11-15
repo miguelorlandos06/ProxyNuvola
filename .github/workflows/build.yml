@@ -34,7 +34,7 @@ jobs:
           APK=app/build/outputs/apk/release/app-release.apk
           VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts || echo "dev")
           BASE="https://s3.todus.cu"
-          BUCKET="stream"
+          BUCKET="stickers"
           NAME=ProxyNuvola/ProxyNuvola-${VERSION}.apk
           NAME_LATEST=ProxyNuvola/ProxyNuvola-latest.apk
           echo "APK size: $(ls -lh "$APK" | awk '{print $5}')"

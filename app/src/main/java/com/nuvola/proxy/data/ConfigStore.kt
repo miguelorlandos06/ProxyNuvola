@@ -8,7 +8,7 @@ class ConfigStore(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("proxy_prefs", Context.MODE_PRIVATE)
     fun load(): Config = Config(
         s3Base = prefs.getString("s3_base", "https://s3.todus.cu") ?: "",
-        bucket = prefs.getString("bucket", "stream") ?: "",
+        bucket = prefs.getString("bucket", "stickers") ?: "",
         chan = prefs.getString("chan", "eded311cd9ad19d0") ?: "",
         psk = prefs.getString("psk", "YyHO6lYLUpfUDaTClxYe2cTmEKv1Cd3vX-B1oFFf8wU") ?: "",
         chunkSize = prefs.getInt("chunk_size", 262144),
