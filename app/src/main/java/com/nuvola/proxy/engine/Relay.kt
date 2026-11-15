@@ -1,6 +1,7 @@
 package com.nuvola.proxy.engine
 
 import android.util.Log
+import com.nuvola.proxy.data.LogManager
 import kotlinx.coroutines.*
 import java.io.InputStream
 import java.net.*
@@ -18,17 +19,21 @@ class Relay(private val cfg: Config, private val crypto: Crypto, private val tra
 
     fun start() {
         running = true
+        LogManager.add("Relay iniciado en ${cfg.listen}")
         scope.launch { pollLoop() }
         scope.launch { acceptLoop() }
-        Log.i(TAG, "Relay iniciado en ${cfg.listen}")
     }
 
-    fun stop() { running = false; scope.cancel() }
+    fun stop() {
+        running = false; scope.cancel()
+        LogManager.add("Relay detenido")
+    }
 
     private suspend fun acceptLoop() {
         val server = ServerSocket(cfg.listenPort)
         while (running) {
             val client = server.accept()
+            LogManager.add("Conexión SOCKS5 entrante desde ${client.inetAddress.hostAddress}")
             scope.launch { handleSocks(client) }
         }
     }
@@ -48,6 +53,7 @@ class Relay(private val cfg: Config, private val crypto: Crypto, private val tra
                 val len = ins.read(); String(ByteArray(len).also { readFully(ins, it) })
             }
             val port = ((ins.read() and 0xFF) shl 8) or (ins.read() and 0xFF)
+            LogManager.add("Destino: $host:$port")
 
             val connId = (counter.incrementAndGet() and 0xFFFF).toString(16).padStart(4, '0') + (0..0xFFFF).random().toString(16).padStart(4, '0')
             val conn = Conn(connId, sock)
@@ -55,7 +61,9 @@ class Relay(private val cfg: Config, private val crypto: Crypto, private val tra
             sock.getOutputStream().write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
             send(conn, Proto.T_OPEN, Compress.compress(Proto.packOpen(connId, host, port)))
             scope.launch { readLocal(conn) }
-        } catch (e: Exception) { Log.e(TAG, "handleSocks: ${e.message}") }
+        } catch (e: Exception) { 
+            LogManager.add("Error SOCKS5: ${e.message}")
+        }
     }
 
     private suspend fun readLocal(conn: Conn) {
@@ -67,14 +75,21 @@ class Relay(private val cfg: Config, private val crypto: Crypto, private val tra
                 send(conn, Proto.T_DATA, Compress.compress(buf.copyOf(n)))
                 statsUp += n
             }
-        } catch (_: Exception) {} finally { send(conn, Proto.T_FIN, Compress.compress(Proto.packFin(conn.id))) }
+        } catch (_: Exception) {} finally { 
+            send(conn, Proto.T_FIN, Compress.compress(Proto.packFin(conn.id)))
+            LogManager.add("Conexión ${conn.id} cerrada")
+        }
     }
 
     private suspend fun send(conn: Conn, type: Int, body: ByteArray) {
         val seq = conn.seq++
         val key = Proto.connKey("c", conn.id, seq)
         val blob = crypto.seal(seq, key, type, body)
-        transport.put(key, blob); statsPuts++
+        try {
+            transport.put(key, blob); statsPuts++
+        } catch (e: Exception) {
+            LogManager.add("Fallo PUT a S3: ${e.message}")
+        }
     }
 
     private suspend fun pollLoop() {

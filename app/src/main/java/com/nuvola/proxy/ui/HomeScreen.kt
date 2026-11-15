@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -19,7 +20,13 @@ import androidx.compose.ui.unit.sp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(state: TunnelUiState, onConnect: () -> Unit, onDisconnect: () -> Unit, onOpenSettings: () -> Unit) {
+fun HomeScreen(
+    state: TunnelUiState, 
+    onConnect: () -> Unit, 
+    onDisconnect: () -> Unit, 
+    onOpenSettings: () -> Unit,
+    onOpenLogs: () -> Unit
+) {
     val isConnected = state.status is TunnelStatus.Connected
     val orbColor = when (state.status) {
         is TunnelStatus.Connected -> Color(0xFF4CAF50)
@@ -30,6 +37,7 @@ fun HomeScreen(state: TunnelUiState, onConnect: () -> Unit, onDisconnect: () -> 
     Scaffold { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onOpenLogs) { Icon(Icons.Default.List, contentDescription = "Logs") }
                 Text("ProxyNuvola", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Ajustes") }
             }
