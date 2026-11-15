@@ -1,5 +1,13 @@
 name: Build ProxyNuvola APK
-on: [push, workflow_dispatch]
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,21 +25,33 @@ jobs:
           keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
       - run: chmod +x ./gradlew
       - run: ./gradlew assembleRelease --no-daemon
-      - name: Upload APK to toDus bucket
+
+      # Copia de seguridad: subir al bucket toDus (puede fallar por la comilla, no bloquea)
+      - name: Upload APK to toDus bucket (best effort)
         if: success()
+        continue-on-error: true
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
           VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts || echo "dev")
           BASE="https://s3.todus.cu"
           BUCKET="stream"
-          NAME="ProxyNuvola/ProxyNuvola-${VERSION}.apk"
-          NAME_LATEST="ProxyNuvola/ProxyNuvola-latest.apk"
+          NAME=ProxyNuvola/ProxyNuvola-${VERSION}.apk
+          NAME_LATEST=ProxyNuvola/ProxyNuvola-latest.apk
           echo "APK size: $(ls -lh "$APK" | awk '{print $5}')"
-          echo "Uploading $NAME ..."
-          curl -fsSL -X PUT --data-binary "@$APK" -H "Content-Type: application/vnd.android.package-archive" "$BASE/$BUCKET/$NAME" -o /dev/null -w "HTTP %{http_code}\n"
-          echo "Uploading $NAME_LATEST ..."
-          curl -fsSL -X PUT --data-binary "@$APK" -H "Content-Type: application/vnd.android.package-archive" "$BASE/$BUCKET/$NAME_LATEST" -o /dev/null -w "HTTP %{http_code}\n"
-          echo "Done. Download: $BASE/$BUCKET/$NAME_LATEST"
+          curl -fsSL -X PUT --data-binary "@$APK" -H "Content-Type: application/vnd.android.package-archive" "$BASE/$BUCKET/$NAME" -o /dev/null -w "HTTP %{http_code}\n" || true
+          curl -fsSL -X PUT --data-binary "@$APK" -H "Content-Type: application/vnd.android.package-archive" "$BASE/$BUCKET/$NAME_LATEST" -o /dev/null -w "HTTP %{http_code}\n" || true
 
+      # Artifact de GitHub (siempre disponible, 90 días)
       - uses: actions/upload-artifact@v4
-        with: { name: ProxyNuvola-apk, path: app/build/outputs/apk/release/app-release.apk }
+        with:
+          name: ProxyNuvola-apk
+          path: app/build/outputs/apk/release/app-release.apk
+
+      # Release automático solo cuando se empuja un tag v*
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/release/app-release.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
