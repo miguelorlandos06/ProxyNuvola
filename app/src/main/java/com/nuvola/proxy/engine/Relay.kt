@@ -15,46 +15,30 @@ class Relay(
     private val transport: Transport,
     private val deviceId: String
 ) {
-    private val conns = ConcurrentHashMap<String, Conn>()
-    val activeConnCount: Int get() = conns.size
-    private val counter = AtomicLong(0)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val activeSessions = ConcurrentHashMap<String, Session>()
+    
+    // Stats como propiedades atómicas
+    val statsUp get() = statsUpL.get(); val statsDown get() = statsDownL.get()
+    val statsPuts get() = 0L; val statsGets get() = 0L // No usados en esta versión
+    val activeConnCount get() = activeSessions.size
+    private val statsUpL = AtomicLong(0)
+    private val statsDownL = AtomicLong(0)
 
-    @Volatile private var watermark: String? = null
     @Volatile private var running = false
     @Volatile private var server: ServerSocket? = null
 
-    val statsUp get() = statsUpL.get(); val statsDown get() = statsDownL.get()
-    val statsPuts get() = statsPutsL.get(); val statsGets get() = statsGetsL.get()
-    private val statsUpL = AtomicLong(0)
-    private val statsDownL = AtomicLong(0)
-    private val statsPutsL = AtomicLong(0)
-    private val statsGetsL = AtomicLong(0)
-
     fun start() {
         running = true
-        LogManager.add("Relay iniciado en ${cfg.listen} (dev=$deviceId)")
-        scope.launch { registerChannel() }
-        scope.launch { pollLoop() }
+        LogManager.add("Relay Go-Protocol iniciado en ${cfg.listen}")
         scope.launch { acceptLoop() }
     }
 
     fun stop() {
         running = false
         try { server?.close() } catch (_: Exception) {}
-        server = null
         scope.cancel()
         LogManager.add("Relay detenido")
-    }
-
-    private suspend fun registerChannel() {
-        try {
-            val json = """{"canales":["${cfg.chan}"]}"""
-            transport.put("registro/activos.json", json.toByteArray())
-            LogManager.add("Canal ${cfg.chan} registrado en registro/activos.json")
-        } catch (e: Exception) {
-            LogManager.add("Fallo registrando canal: ${e.message}")
-        }
     }
 
     private suspend fun acceptLoop() {
@@ -66,7 +50,6 @@ class Relay(
             val srv = server!!
             while (running) {
                 val client = try { srv.accept() } catch (_: Exception) { if (running) continue else break }
-                LogManager.add("SOCKS5 entrante desde ${client.inetAddress.hostAddress}")
                 scope.launch { handleSocks(client) }
             }
         } catch (e: Exception) {
@@ -94,82 +77,98 @@ class Relay(
                 else -> { val len = ins.read(); String(ByteArray(len).also { readFully(ins, it) }) }
             }
             val port = ((ins.read() and 0xFF) shl 8) or (ins.read() and 0xFF)
-            LogManager.add("Destino: $host:$port")
 
-            val connId = (counter.incrementAndGet() and 0xFFFF).toString(16).padStart(4, '0') +
-                         (0..0xFFFF).random().toString(16).padStart(4, '0')
-            val conn = Conn(connId, sock)
-            conns[connId] = conn
+            val sessionId = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+            LogManager.add("Nueva sesión Go $sessionId -> $host:$port")
+
             sock.getOutputStream().write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
-            send(conn, Proto.T_OPEN, Compress.compress(Proto.packOpen(connId, host, port)))
-            scope.launch { readLocal(conn) }
+            
+            // 1. Enviar target JSON
+            val targetJson = """{"version":2,"mode":"tcp","host":"$host","port":$port}"""
+            val targetKey = Protocol.targetKey(sessionId)
+            transport.put(targetKey, crypto.seal(targetKey, targetJson.toByteArray()))
+
+            // 2. Leer cola actual, añadir sesión y reescribir
+            val queueKey = Protocol.queueKey(0)
+            val queueRaw = transport.get(queueKey)
+            val queueTxt = if (queueRaw != null) String(crypto.open(queueKey, queueRaw) ?: byteArrayOf(), Charsets.UTF_8) else ""
+            val newQueue = (queueTxt + "\n" + sessionId).trim()
+            transport.put(queueKey, crypto.seal(queueKey, newQueue.toByteArray()))
+
+            val session = Session(sessionId, sock)
+            activeSessions[sessionId] = session
+            scope.launch { sessionLoop(session) }
+
         } catch (e: Exception) {
             LogManager.add("Error SOCKS5: ${e.message}")
         }
     }
 
-    private suspend fun readLocal(conn: Conn) {
+    private suspend fun sessionLoop(session: Session) {
+        val uplinkJob = scope.launch { uplink(session) }
+        downlink(session)
+        uplinkJob.cancel()
+    }
+
+    private suspend fun uplink(session: Session) {
         val buf = ByteArray(cfg.chunkSize)
+        var seq = 0L
         try {
             while (running) {
-                val n = conn.sock.getInputStream().read(buf)
+                val n = session.sock.getInputStream().read(buf)
                 if (n <= 0) break
-                send(conn, Proto.T_DATA, Compress.compress(buf.copyOf(n)))
+                val frame = Protocol.encodeFrame(seq, buf.copyOf(n))
+                val key = Protocol.dataKey("c2s", session.id, seq)
+                transport.put(key, crypto.seal(key, frame))
+                seq++
                 statsUpL.addAndGet(n.toLong())
             }
         } catch (_: Exception) {} finally {
-            send(conn, Proto.T_FIN, Compress.compress(Proto.packFin(conn.id)))
-            LogManager.add("Conexión ${conn.id} cerrada")
+            val finKey = Protocol.finKey("c2s", session.id)
+            transport.put(finKey, crypto.seal(finKey, Protocol.encodeCounter(seq)))
         }
     }
 
-    // Keys compatibles con server.js:
-    // - app escribe en "<chan>/c/<connId>/<seq>"
-    // - server lee de "<chan>/c/" y usa k.split("/")[2] como connId
-    // - server escribe en "<chan>/s/<connId>/<seq>"
-    // - app lista "<chan>/s/" y extrae connId con Proto.connIdOf(k)
-    private fun upKey(id: String, seq: Long) =
-        "${cfg.chan}/c/$id/${seq.toString().padStart(12, '0')}"
-    private fun downPrefix() = "${cfg.chan}/s/"
-
-    private suspend fun send(conn: Conn, type: Int, body: ByteArray) {
-        val seq = conn.seq++
-        val key = upKey(conn.id, seq)
-        val blob = crypto.seal(seq, key, type, body)
-        try {
-            transport.put(key, blob); statsPutsL.incrementAndGet()
-        } catch (e: Exception) {
-            LogManager.add("Fallo PUT a S3: ${e.message}")
-        }
-    }
-
-    private suspend fun pollLoop() {
-        var backoff = 0L
-        while (running) {
-            try {
-                val keys = transport.list(downPrefix(), watermark)
-                for (k in keys) {
-                    if (!running) break
-                    val blob = transport.get(k)
-                    if (blob == null) { watermark = k; continue }
-                    val (type, body) = crypto.unseal(blob, k)
-                    val raw = Compress.decompress(body)
-                    val connId = Proto.connIdOf(k)
-                    when (type) {
-                        Proto.T_DATA -> conns[connId]?.sock?.getOutputStream()?.write(raw)
-                        Proto.T_FIN  -> conns.remove(connId)?.sock?.close()
-                    }
-                    transport.delete(k)
-                    watermark = k
-                    statsGetsL.incrementAndGet()
-                }
-                backoff = 0
-            } catch (e: Exception) {
-                backoff = (backoff * 2).coerceAtMost(5000)
-                LogManager.add("pollLoop: ${e.message} (retry ${backoff}ms)")
+    private suspend fun downlink(session: Session) {
+        var seq = 0L
+        var lastAck = 0L
+        var sinceAck = 0
+        while (running && activeSessions.containsKey(session.id)) {
+            val finKey = Protocol.finKey("s2c", session.id)
+            val finRaw = transport.get(finKey)
+            if (finRaw != null) {
+                val finSeq = Protocol.decodeCounter(crypto.open(finKey, finRaw))
+                if (seq >= finSeq) break
             }
-            delay((cfg.pollIntervalMs + backoff).toLong())
+            
+            val key = Protocol.dataKey("s2c", session.id, seq)
+            val dataRaw = transport.get(key)
+            if (dataRaw != null) {
+                val decrypted = crypto.open(key, dataRaw)
+                if (decrypted != null) {
+                    val payload = Protocol.decodeFrame(decrypted, seq)
+                    if (payload != null) {
+                        session.sock.getOutputStream().write(payload)
+                        statsDownL.addAndGet(payload.size.toLong())
+                    }
+                }
+                seq++
+                sinceAck++
+                
+                if (sinceAck >= 4) { // ACK_EVERY
+                    val ackKey = Protocol.ackKey("c2s", session.id)
+                    transport.put(ackKey, crypto.seal(ackKey, Protocol.encodeCounter(seq)))
+                    lastAck = seq
+                    sinceAck = 0
+                }
+                continue
+            }
+            
+            delay(cfg.pollIntervalMs.toLong())
         }
+        activeSessions.remove(session.id)
+        try { session.sock.close() } catch (_: Exception) {}
+        LogManager.add("Sesión ${session.id} cerrada")
     }
 
     private fun readFully(ins: InputStream, buf: ByteArray) {
@@ -181,5 +180,5 @@ class Relay(
         }
     }
 
-    class Conn(val id: String, val sock: Socket) { var seq = 0L }
+    class Session(val id: String, val sock: Socket)
 }

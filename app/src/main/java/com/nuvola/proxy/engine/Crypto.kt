@@ -1,72 +1,50 @@
 package com.nuvola.proxy.engine
 
-import java.nio.ByteBuffer
-import java.security.SecureRandom
-import javax.crypto.Cipher
+import java.nio.charset.StandardCharsets
 import javax.crypto.Mac
-import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class Crypto(psk: String, chan: String) {
-    companion object {
-        val MAGIC = byteArrayOf('T'.code.toByte(), 'R'.code.toByte(), '1'.code.toByte())
-        const val NONCE_LEN = 12
-        const val TAG_LEN = 16
-        const val HDR_LEN = 3 + NONCE_LEN
-        const val MIN_BLOB = HDR_LEN + TAG_LEN + 1
+class Crypto(private val secretHex: String) {
+    private val secretBytes: ByteArray = hexToBytes(secretHex)
 
-        fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int = 32): ByteArray {
-            val mac = Mac.getInstance("HmacSHA256")
-            mac.init(SecretKeySpec(if (salt.isEmpty()) ByteArray(32) else salt, "HmacSHA256"))
-            val prk = mac.doFinal(ikm)
-            mac.init(SecretKeySpec(prk, "HmacSHA256"))
-            val out = ByteArray(length)
-            var t = ByteArray(0); var pos = 0; var counter = 1
-            while (pos < length) {
-                mac.reset(); mac.update(t); mac.update(info); mac.update(counter.toByte())
-                t = mac.doFinal()
-                val toCopy = minOf(t.size, length - pos)
-                System.arraycopy(t, 0, out, pos, toCopy); pos += toCopy; counter++
-            }
-            return out
+    private fun hexToBytes(hex: String): ByteArray {
+        val clean = hex.filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+        val out = ByteArray(clean.length / 2)
+        for (i in out.indices) {
+            out[i] = ((Character.digit(clean[i * 2], 16) shl 4) + Character.digit(clean[i * 2 + 1], 16)).toByte()
         }
-    }
-
-    private val key: ByteArray
-    private val random = SecureRandom()
-
-    init {
-        val salt = ("todus-relay|" + chan).toByteArray(Charsets.US_ASCII)
-        key = hkdfSha256(psk.toByteArray(), salt, "todus-relay/v1/aesgcm".toByteArray(), 32)
-    }
-
-    fun seal(seq: Long, path: String, mtype: Int, body: ByteArray): ByteArray {
-        val nonce = ByteArray(NONCE_LEN)
-        val rnd = ByteArray(4); random.nextBytes(rnd)
-        System.arraycopy(rnd, 0, nonce, 0, 4)
-        ByteBuffer.wrap(nonce, 4, 8).putLong(seq)
-        val aes = Cipher.getInstance("AES/GCM/NoPadding")
-        aes.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_LEN * 8, nonce))
-        aes.updateAAD(path.toByteArray())
-        val pt = ByteArray(1 + body.size)
-        pt[0] = (mtype and 0xFF).toByte()
-        System.arraycopy(body, 0, pt, 1, body.size)
-        val ct = aes.doFinal(pt)
-        val out = ByteArray(HDR_LEN + ct.size)
-        System.arraycopy(MAGIC, 0, out, 0, 3)
-        System.arraycopy(nonce, 0, out, 3, NONCE_LEN)
-        System.arraycopy(ct, 0, out, HDR_LEN, ct.size)
         return out
     }
 
-    fun unseal(blob: ByteArray, path: String): Pair<Int, ByteArray> {
-        if (blob.size < MIN_BLOB || !blob.copyOfRange(0, 3).contentEquals(MAGIC)) throw Exception("blob invalido")
-        val nonce = blob.copyOfRange(3, HDR_LEN)
-        val ct = blob.copyOfRange(HDR_LEN, blob.size)
-        val aes = Cipher.getInstance("AES/GCM/NoPadding")
-        aes.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_LEN * 8, nonce))
-        aes.updateAAD(path.toByteArray())
-        val pt = aes.doFinal(ct)
-        return (pt[0].toInt() and 0xFF) to pt.copyOfRange(1, pt.size)
+    fun seal(key: String, data: ByteArray): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(secretBytes, "HmacSHA256"))
+        mac.update(key.toByteArray(StandardCharsets.UTF_8))
+        mac.update(0)
+        mac.update(data)
+        val tag = mac.doFinal()
+
+        val out = ByteArray(4 + Protocol.TAG_SIZE + data.size)
+        System.arraycopy(Protocol.ENVELOPE_MAGIC, 0, out, 0, 4)
+        System.arraycopy(tag, 0, out, 4, Protocol.TAG_SIZE)
+        System.arraycopy(data, 0, out, 4 + Protocol.TAG_SIZE, data.size)
+        return out
+    }
+
+    fun open(key: String, envelope: ByteArray): ByteArray? {
+        if (envelope.size < 4 + Protocol.TAG_SIZE) return null
+        if (!envelope.copyOfRange(0, 4).contentEquals(Protocol.ENVELOPE_MAGIC)) return null
+        
+        val tag = envelope.copyOfRange(4, 4 + Protocol.TAG_SIZE)
+        val data = envelope.copyOfRange(4 + Protocol.TAG_SIZE, envelope.size)
+
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(secretBytes, "HmacSHA256"))
+        mac.update(key.toByteArray(StandardCharsets.UTF_8))
+        mac.update(0)
+        mac.update(data)
+        val expected = mac.doFinal()
+
+        return if (java.security.MessageDigest.isEqual(tag, expected)) data else null
     }
 }
